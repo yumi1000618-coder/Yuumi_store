@@ -3,21 +3,22 @@ import sqlite3
 import hashlib
 from datetime import datetime
 
-# -----------------------------
-# PAGE CONFIG
-# -----------------------------
+# =========================
+# 基本設定
+# =========================
 
 st.set_page_config(
-    page_title="MiniStore",
+    page_title="我的線上商店",
     page_icon="🛍️",
     layout="wide"
 )
 
-# -----------------------------
-# DATABASE
-# -----------------------------
+DB = "shop.db"
 
-DB = "store_new.db"
+
+# =========================
+# 資料庫
+# =========================
 
 def connect_db():
     return sqlite3.connect(DB)
@@ -31,6 +32,7 @@ def init_database():
     conn = connect_db()
     cur = conn.cursor()
 
+    # 使用者
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,26 +42,27 @@ def init_database():
         )
     """)
 
+    # 商品
     cur.execute("""
         CREATE TABLE IF NOT EXISTS products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
-            description TEXT,
             price REAL NOT NULL,
-            inventory INTEGER NOT NULL
+            stock INTEGER NOT NULL
         )
     """)
 
+    # 訂單
     cur.execute("""
         CREATE TABLE IF NOT EXISTS orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL,
             total REAL NOT NULL,
-            payment_method TEXT,
             created_at TEXT NOT NULL
         )
     """)
 
+    # 訂單商品
     cur.execute("""
         CREATE TABLE IF NOT EXISTS order_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,43 +74,54 @@ def init_database():
         )
     """)
 
-    # Demo accounts
-    cur.execute(
-        "INSERT OR IGNORE INTO users VALUES (?, ?, ?)",
-        ("admin", hash_password("admin123"), "admin")
-    )
+    # 建立管理員帳號
+    cur.execute("""
+        INSERT OR IGNORE INTO users
+        (username, password, role)
+        VALUES (?, ?, ?)
+    """, (
+        "admin",
+        hash_password("admin123"),
+        "admin"
+    ))
 
-    cur.execute(
-        "INSERT OR IGNORE INTO users VALUES (?, ?, ?)",
-        ("customer", hash_password("customer123"), "customer")
-    )
+    # 建立一般使用者
+    cur.execute("""
+        INSERT OR IGNORE INTO users
+        (username, password, role)
+        VALUES (?, ?, ?)
+    """, (
+        "customer",
+        hash_password("customer123"),
+        "customer"
+    ))
 
-    # Demo products
+    # 預設商品
     cur.execute("SELECT COUNT(*) FROM products")
+    count = cur.fetchone()[0]
 
-    if cur.fetchone()[0] == 0:
+    if count == 0:
         products = [
-            ("Wireless Headphones", "Comfortable wireless headphones", 59.99, 10),
-            ("Minimal Backpack", "Everyday backpack", 39.99, 15),
-            ("Desk Lamp", "Modern LED desk lamp", 24.99, 20),
-            ("Water Bottle", "Reusable stainless steel bottle", 19.99, 25),
+            ("無線耳機", 599, 10),
+            ("簡約後背包", 899, 15),
+            ("桌上型檯燈", 499, 20),
+            ("保溫水壺", 399, 25),
+            ("手機支架", 299, 30),
         ]
 
         cur.executemany("""
             INSERT INTO products
-            (name, description, price, inventory)
-            VALUES (?, ?, ?, ?)
+            (name, price, stock)
+            VALUES (?, ?, ?)
         """, products)
 
     conn.commit()
     conn.close()
 
 
-init_database()
-
-# -----------------------------
-# SESSION STATE
-# -----------------------------
+# =========================
+# Session State
+# =========================
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
@@ -122,17 +136,19 @@ if "cart" not in st.session_state:
     st.session_state.cart = {}
 
 
-# -----------------------------
-# LOGIN
-# -----------------------------
+# =========================
+# 登入
+# =========================
 
 def login():
-    st.title("🔐 Login")
+    st.title("🛍️ 我的線上商店")
 
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
+    st.subheader("🔐 登入")
 
-    if st.button("Login"):
+    username = st.text_input("帳號")
+    password = st.text_input("密碼", type="password")
+
+    if st.button("登入", use_container_width=True):
 
         conn = connect_db()
         cur = conn.cursor()
@@ -142,7 +158,10 @@ def login():
             FROM users
             WHERE username = ?
             AND password = ?
-        """, (username, hash_password(password)))
+        """, (
+            username,
+            hash_password(password)
+        ))
 
         user = cur.fetchone()
 
@@ -153,152 +172,111 @@ def login():
             st.session_state.username = user[0]
             st.session_state.role = user[1]
 
-            st.success("Login successful!")
+            st.success("登入成功！")
             st.rerun()
 
         else:
-            st.error("Invalid username or password.")
+            st.error("帳號或密碼錯誤")
+
+    st.divider()
+
+    st.info("""
+    測試帳號：
+
+    管理員：
+    帳號：admin
+    密碼：admin123
+
+    顧客：
+    帳號：customer
+    密碼：customer123
+    """)
 
 
-# -----------------------------
-# REGISTER
-# -----------------------------
+# =========================
+# 商品列表
+# =========================
 
-def register():
-    st.title("📝 Create Account")
+def show_products():
 
-    username = st.text_input("New username")
-    password = st.text_input(
-        "New password",
-        type="password"
-    )
+    st.title("🛍️ 商品商店")
 
-    if st.button("Create account"):
-
-        if len(password) < 6:
-            st.error("Password must contain at least 6 characters.")
-            return
-
-        conn = connect_db()
-        cur = conn.cursor()
-
-        try:
-            cur.execute("""
-                INSERT INTO users
-                (username, password, role)
-                VALUES (?, ?, ?)
-            """, (
-                username,
-                hash_password(password),
-                "customer"
-            ))
-
-            conn.commit()
-
-            st.success("Account created!")
-
-        except sqlite3.IntegrityError:
-            st.error("Username already exists.")
-
-        conn.close()
-
-
-# -----------------------------
-# PRODUCTS
-# -----------------------------
-
-def get_products():
     conn = connect_db()
+    cur = conn.cursor()
 
-    products = conn.execute("""
-        SELECT id, name, description, price, inventory
+    cur.execute("""
+        SELECT id, name, price, stock
         FROM products
-    """).fetchall()
+        ORDER BY id
+    """)
+
+    products = cur.fetchall()
 
     conn.close()
 
-    return products
+    if not products:
+        st.warning("目前沒有商品")
+        return
 
-
-# -----------------------------
-# STORE
-# -----------------------------
-
-def store():
-
-    st.title("🛍️ MiniStore")
-    st.write("Welcome to the online store!")
-
-    products = get_products()
-
-    columns = st.columns(4)
+    cols = st.columns(3)
 
     for index, product in enumerate(products):
 
         product_id = product[0]
         name = product[1]
-        description = product[2]
-        price = product[3]
-        inventory = product[4]
+        price = product[2]
+        stock = product[3]
 
-        with columns[index % 4]:
+        with cols[index % 3]:
 
             st.subheader(name)
 
-            st.write(description)
+            st.write(f"💰 價格：NT$ {price:.0f}")
 
-            st.write(f"💰 **${price:.2f}**")
-
-            st.write(f"📦 Stock: {inventory}")
-
-            if inventory > 0:
+            if stock > 0:
+                st.write(f"📦 庫存：{stock}")
 
                 quantity = st.number_input(
-                    "Quantity",
+                    "數量",
                     min_value=1,
-                    max_value=inventory,
+                    max_value=stock,
                     value=1,
                     key=f"qty_{product_id}"
                 )
 
                 if st.button(
-                    "Add to cart",
-                    key=f"add_{product_id}"
+                    "🛒 加入購物車",
+                    key=f"add_{product_id}",
+                    use_container_width=True
                 ):
 
-                    current_quantity = st.session_state.cart.get(
-                        product_id,
-                        0
-                    )
-
-                    if current_quantity + quantity <= inventory:
-
-                        st.session_state.cart[product_id] = (
-                            current_quantity + quantity
-                        )
-
-                        st.success("Added!")
-
+                    if product_id in st.session_state.cart:
+                        st.session_state.cart[product_id] += quantity
                     else:
-                        st.error("Not enough stock.")
+                        st.session_state.cart[product_id] = quantity
+
+                    st.success(f"{name} 已加入購物車")
 
             else:
-                st.error("Out of stock.")
+                st.error("售罄")
+
+            st.divider()
 
 
-# -----------------------------
-# CART
-# -----------------------------
+# =========================
+# 購物車
+# =========================
 
-def cart():
+def show_cart():
 
-    st.title("🛒 Shopping Cart")
+    st.title("🛒 我的購物車")
 
     if not st.session_state.cart:
-        st.info("Your cart is empty.")
+        st.info("購物車目前是空的")
         return
 
     conn = connect_db()
+    cur = conn.cursor()
 
     total = 0
 
@@ -306,167 +284,173 @@ def cart():
         st.session_state.cart.items()
     ):
 
-        product = conn.execute("""
-            SELECT name, price, inventory
+        cur.execute("""
+            SELECT name, price, stock
             FROM products
             WHERE id = ?
-        """, (product_id,)).fetchone()
+        """, (product_id,))
+
+        product = cur.fetchone()
 
         if not product:
             continue
 
-        name, price, inventory = product
+        name, price, stock = product
 
         subtotal = price * quantity
         total += subtotal
 
-        st.write(
-            f"### {name}"
+        col1, col2, col3, col4 = st.columns(
+            [3, 1, 1, 1]
         )
 
-        st.write(
-            f"${price:.2f} × {quantity} = "
-            f"**${subtotal:.2f}**"
-        )
+        with col1:
+            st.write(f"**{name}**")
 
-        if st.button(
-            f"Remove {name}",
-            key=f"remove_{product_id}"
-        ):
+        with col2:
+            st.write(f"NT$ {price:.0f}")
 
-            del st.session_state.cart[product_id]
-            st.rerun()
+        with col3:
+            st.write(f"數量：{quantity}")
+
+        with col4:
+
+            if st.button(
+                "🗑️ 移除",
+                key=f"remove_{product_id}"
+            ):
+
+                del st.session_state.cart[product_id]
+                st.rerun()
 
     conn.close()
 
     st.divider()
 
     st.subheader(
-        f"Total: ${total:.2f}"
+        f"總金額：NT$ {total:.0f}"
     )
 
+    if st.button(
+        "💳 前往結帳",
+        use_container_width=True
+    ):
+        st.session_state.page = "checkout"
+        st.rerun()
 
-# -----------------------------
-# CHECKOUT
-# -----------------------------
+
+# =========================
+# 結帳
+# =========================
 
 def checkout():
 
-    st.title("💳 Checkout")
+    st.title("💳 結帳")
 
     if not st.session_state.cart:
-        st.info("Your cart is empty.")
+        st.info("購物車是空的")
         return
 
     conn = connect_db()
+    cur = conn.cursor()
 
     total = 0
+    order_products = []
 
     for product_id, quantity in st.session_state.cart.items():
 
-        product = conn.execute("""
-            SELECT name, price, inventory
+        cur.execute("""
+            SELECT name, price, stock
             FROM products
             WHERE id = ?
-        """, (product_id,)).fetchone()
+        """, (product_id,))
 
-        if product:
+        product = cur.fetchone()
 
-            name, price, inventory = product
+        if not product:
+            continue
 
-            total += price * quantity
+        name, price, stock = product
 
-    st.subheader(
-        f"Order total: ${total:.2f}"
-    )
-
-    st.info(
-        "This is a demo payment system. "
-        "No real payment will be charged."
-    )
-
-    name = st.text_input("Name on card")
-
-    card = st.text_input(
-        "Demo card number",
-        placeholder="4242 4242 4242 4242"
-    )
-
-    payment_method = st.selectbox(
-        "Payment method",
-        ["Demo Card", "Demo Pay"]
-    )
-
-    if st.button("Pay & Place Order"):
-
-        if not name or not card:
-            st.error("Please complete the payment information.")
+        if quantity > stock:
+            st.error(
+                f"{name} 庫存不足，目前只剩 {stock} 件"
+            )
             conn.close()
             return
 
-        # Check inventory again before completing order
-        for product_id, quantity in st.session_state.cart.items():
+        subtotal = price * quantity
+        total += subtotal
 
-            product = conn.execute("""
-                SELECT inventory
-                FROM products
-                WHERE id = ?
-            """, (product_id,)).fetchone()
+        order_products.append(
+            (product_id, name, price, quantity)
+        )
 
-            if not product or product[0] < quantity:
+    st.subheader("訂單內容")
 
-                st.error(
-                    "There is not enough inventory "
-                    "for one of your products."
-                )
+    for product_id, name, price, quantity in order_products:
+        st.write(
+            f"{name} × {quantity} = NT$ {price * quantity:.0f}"
+        )
 
-                conn.close()
-                return
+    st.divider()
 
-        # Create order
-        cursor = conn.cursor()
+    st.subheader(
+        f"應付金額：NT$ {total:.0f}"
+    )
 
-        cursor.execute("""
+    payment = st.selectbox(
+        "付款方式",
+        [
+            "信用卡（示範）",
+            "ATM（示範）",
+            "超商付款（示範）"
+        ]
+    )
+
+    st.info(
+        f"目前選擇：{payment}"
+    )
+
+    if st.button(
+        "✅ 確認付款並完成訂單",
+        use_container_width=True
+    ):
+
+        # 建立訂單
+        cur.execute("""
             INSERT INTO orders
-            (username, total, payment_method, created_at)
-            VALUES (?, ?, ?, ?)
+            (username, total, created_at)
+            VALUES (?, ?, ?)
         """, (
             st.session_state.username,
             total,
-            payment_method,
             datetime.now().strftime(
                 "%Y-%m-%d %H:%M:%S"
             )
         ))
 
-        order_id = cursor.lastrowid
+        order_id = cur.lastrowid
 
-        # Save order items + reduce inventory
-        for product_id, quantity in st.session_state.cart.items():
+        # 建立訂單商品
+        for product_id, name, price, quantity in order_products:
 
-            product = conn.execute("""
-                SELECT name, price
-                FROM products
-                WHERE id = ?
-            """, (product_id,)).fetchone()
-
-            product_name, price = product
-
-            cursor.execute("""
+            cur.execute("""
                 INSERT INTO order_items
                 (order_id, product_id, product_name, quantity, price)
                 VALUES (?, ?, ?, ?, ?)
             """, (
                 order_id,
                 product_id,
-                product_name,
+                name,
                 quantity,
                 price
             ))
 
-            cursor.execute("""
+            # 扣除庫存
+            cur.execute("""
                 UPDATE products
-                SET inventory = inventory - ?
+                SET stock = stock - ?
                 WHERE id = ?
             """, (
                 quantity,
@@ -476,122 +460,132 @@ def checkout():
         conn.commit()
         conn.close()
 
+        # 清空購物車
         st.session_state.cart = {}
 
         st.success(
-            f"Order #{order_id} completed successfully!"
+            f"🎉 訂單完成！訂單編號：#{order_id}"
         )
 
         st.balloons()
 
 
-# -----------------------------
-# ORDER HISTORY
-# -----------------------------
+# =========================
+# 訂單紀錄
+# =========================
 
 def order_history():
 
-    st.title("📜 Order History")
+    st.title("📦 我的訂單")
 
     conn = connect_db()
+    cur = conn.cursor()
 
-    orders = conn.execute("""
-        SELECT id, total, payment_method, created_at
+    cur.execute("""
+        SELECT id, total, created_at
         FROM orders
         WHERE username = ?
         ORDER BY id DESC
     """, (
         st.session_state.username,
-    )).fetchall()
+    ))
+
+    orders = cur.fetchall()
 
     if not orders:
-        st.info("You haven't placed any orders yet.")
+        st.info("目前沒有訂單")
+        conn.close()
+        return
 
     for order in orders:
 
         order_id = order[0]
         total = order[1]
-        payment = order[2]
-        date = order[3]
+        created_at = order[2]
 
         with st.expander(
-            f"Order #{order_id} — ${total:.2f}"
+            f"訂單 #{order_id}｜NT$ {total:.0f}｜{created_at}"
         ):
 
-            st.write(f"Date: {date}")
-            st.write(f"Payment: {payment}")
-
-            items = conn.execute("""
+            cur.execute("""
                 SELECT product_name, quantity, price
                 FROM order_items
                 WHERE order_id = ?
-            """, (order_id,)).fetchall()
+            """, (order_id,))
+
+            items = cur.fetchall()
 
             for item in items:
 
+                name, quantity, price = item
+
                 st.write(
-                    f"{item[0]} × {item[1]} "
-                    f"— ${item[2]:.2f}"
+                    f"{name} × {quantity} "
+                    f"— NT$ {price * quantity:.0f}"
                 )
 
     conn.close()
 
 
-# -----------------------------
-# ADMIN DASHBOARD
-# -----------------------------
+# =========================
+# 管理員後台
+# =========================
 
 def admin_dashboard():
 
-    st.title("👑 Admin Dashboard")
+    st.title("🔧 管理員後台")
 
-    tabs = st.tabs([
-        "Inventory",
-        "Add Product",
-        "Orders"
+    tab1, tab2, tab3 = st.tabs([
+        "📦 商品管理",
+        "➕ 新增商品",
+        "📊 訂單管理"
     ])
 
-    # INVENTORY
-    with tabs[0]:
+    # ---------------------
+    # 商品管理
+    # ---------------------
 
-        st.subheader("Manage Inventory")
+    with tab1:
 
-        products = get_products()
+        conn = connect_db()
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT id, name, price, stock
+            FROM products
+            ORDER BY id
+        """)
+
+        products = cur.fetchall()
+
+        conn.close()
 
         for product in products:
 
-            product_id = product[0]
-            name = product[1]
-            description = product[2]
-            price = product[3]
-            inventory = product[4]
+            product_id, name, price, stock = product
 
-            with st.expander(name):
+            with st.expander(
+                f"{name}｜NT$ {price:.0f}｜庫存 {stock}"
+            ):
 
                 new_name = st.text_input(
-                    "Name",
-                    name,
+                    "商品名稱",
+                    value=name,
                     key=f"name_{product_id}"
                 )
 
-                new_description = st.text_area(
-                    "Description",
-                    description,
-                    key=f"description_{product_id}"
-                )
-
                 new_price = st.number_input(
-                    "Price",
+                    "價格",
                     min_value=0.0,
                     value=float(price),
                     key=f"price_{product_id}"
                 )
 
-                new_inventory = st.number_input(
-                    "Inventory",
+                new_stock = st.number_input(
+                    "庫存",
                     min_value=0,
-                    value=int(inventory),
-                    key=f"inventory_{product_id}"
+                    value=int(stock),
+                    key=f"stock_{product_id}"
                 )
 
                 col1, col2 = st.columns(2)
@@ -599,43 +593,43 @@ def admin_dashboard():
                 with col1:
 
                     if st.button(
-                        "Save changes",
-                        key=f"save_{product_id}"
+                        "💾 儲存修改",
+                        key=f"save_{product_id}",
+                        use_container_width=True
                     ):
 
                         conn = connect_db()
+                        cur = conn.cursor()
 
-                        conn.execute("""
+                        cur.execute("""
                             UPDATE products
-                            SET name = ?,
-                                description = ?,
-                                price = ?,
-                                inventory = ?
+                            SET name = ?, price = ?, stock = ?
                             WHERE id = ?
                         """, (
                             new_name,
-                            new_description,
                             new_price,
-                            new_inventory,
+                            new_stock,
                             product_id
                         ))
 
                         conn.commit()
                         conn.close()
 
-                        st.success("Product updated.")
+                        st.success("修改成功")
                         st.rerun()
 
                 with col2:
 
                     if st.button(
-                        "Delete",
-                        key=f"delete_{product_id}"
+                        "🗑️ 刪除商品",
+                        key=f"delete_{product_id}",
+                        use_container_width=True
                     ):
 
                         conn = connect_db()
+                        cur = conn.cursor()
 
-                        conn.execute("""
+                        cur.execute("""
                             DELETE FROM products
                             WHERE id = ?
                         """, (product_id,))
@@ -643,81 +637,101 @@ def admin_dashboard():
                         conn.commit()
                         conn.close()
 
-                        st.success("Product deleted.")
+                        st.success("商品已刪除")
                         st.rerun()
 
-    # ADD PRODUCT
-    with tabs[1]:
+    # ---------------------
+    # 新增商品
+    # ---------------------
 
-        st.subheader("Add New Product")
+    with tab2:
 
-        name = st.text_input("Product name")
-        description = st.text_area("Description")
+        st.subheader("➕ 新增商品")
+
+        name = st.text_input("商品名稱")
+
         price = st.number_input(
-            "Price",
-            min_value=0.0
-        )
-        inventory = st.number_input(
-            "Inventory",
-            min_value=0,
-            step=1
+            "商品價格",
+            min_value=0.0,
+            value=100.0
         )
 
-        if st.button("Add product"):
+        stock = st.number_input(
+            "商品庫存",
+            min_value=0,
+            value=10
+        )
+
+        if st.button(
+            "新增商品",
+            use_container_width=True
+        ):
 
             if not name:
-                st.error("Product name is required.")
+                st.error("請輸入商品名稱")
+
             else:
 
                 conn = connect_db()
+                cur = conn.cursor()
 
-                conn.execute("""
+                cur.execute("""
                     INSERT INTO products
-                    (name, description, price, inventory)
-                    VALUES (?, ?, ?, ?)
+                    (name, price, stock)
+                    VALUES (?, ?, ?)
                 """, (
                     name,
-                    description,
                     price,
-                    inventory
+                    stock
                 ))
 
                 conn.commit()
                 conn.close()
 
-                st.success("Product added!")
+                st.success("商品新增成功！")
                 st.rerun()
 
-    # ORDERS
-    with tabs[2]:
+    # ---------------------
+    # 訂單管理
+    # ---------------------
 
-        st.subheader("All Orders")
+    with tab3:
 
         conn = connect_db()
+        cur = conn.cursor()
 
-        orders = conn.execute("""
-            SELECT id, username, total,
-                   payment_method, created_at
+        cur.execute("""
+            SELECT id, username, total, created_at
             FROM orders
             ORDER BY id DESC
-        """).fetchall()
+        """)
 
-        for order in orders:
-
-            st.write(
-                f"**Order #{order[0]}** | "
-                f"Customer: {order[1]} | "
-                f"${order[2]:.2f} | "
-                f"{order[3]} | "
-                f"{order[4]}"
-            )
+        orders = cur.fetchall()
 
         conn.close()
 
+        if not orders:
+            st.info("目前沒有訂單")
 
-# -----------------------------
-# LOGOUT
-# -----------------------------
+        else:
+
+            for order in orders:
+
+                order_id, username, total, created_at = order
+
+                st.write(
+                    f"📦 訂單 #{order_id}｜"
+                    f"顧客：{username}｜"
+                    f"金額：NT$ {total:.0f}｜"
+                    f"{created_at}"
+                )
+
+                st.divider()
+
+
+# =========================
+# 登出
+# =========================
 
 def logout():
 
@@ -729,86 +743,72 @@ def logout():
     st.rerun()
 
 
-# -----------------------------
-# MAIN APP
-# -----------------------------
+# =========================
+# 啟動資料庫
+# =========================
+
+init_database()
+
+
+# =========================
+# 主程式
+# =========================
 
 if not st.session_state.logged_in:
 
-    st.sidebar.title("🛍️ MiniStore")
-
-    page = st.sidebar.radio(
-        "Menu",
-        [
-            "Store",
-            "Login",
-            "Register"
-        ]
-    )
-
-    if page == "Store":
-        store()
-
-    elif page == "Login":
-        login()
-
-    else:
-        register()
+    login()
 
 else:
 
-    st.sidebar.title(
-        f"👋 {st.session_state.username}"
+    st.sidebar.title("🛍️ 我的商店")
+
+    st.sidebar.write(
+        f"👤 使用者：{st.session_state.username}"
     )
 
     st.sidebar.write(
-        f"Role: {st.session_state.role}"
+        f"身份：{st.session_state.role}"
     )
+
+    st.sidebar.divider()
 
     if st.session_state.role == "admin":
 
         page = st.sidebar.radio(
-            "Menu",
+            "功能",
             [
-                "Admin Dashboard",
-                "Store",
-                "Logout"
+                "🔧 管理員後台",
+                "🛍️ 商品商店"
             ]
         )
 
-        if page == "Admin Dashboard":
+        if page == "🔧 管理員後台":
             admin_dashboard()
 
-        elif page == "Store":
-            store()
-
-        else:
-            logout()
+        elif page == "🛍️ 商品商店":
+            show_products()
 
     else:
 
         page = st.sidebar.radio(
-            "Menu",
+            "功能",
             [
-                "Store",
-                "Cart",
-                "Checkout",
-                "Order History",
-                "Logout"
+                "🛍️ 商品商店",
+                "🛒 購物車",
+                "📦 我的訂單"
             ]
         )
 
-        if page == "Store":
-            store()
+        if page == "🛍️ 商品商店":
+            show_products()
 
-        elif page == "Cart":
-            cart()
+        elif page == "🛒 購物車":
+            show_cart()
 
-        elif page == "Checkout":
-            checkout()
-
-        elif page == "Order History":
+        elif page == "📦 我的訂單":
             order_history()
 
-        else:
-            logout()
+    st.sidebar.divider()
+
+    if st.button("🚪 登出"):
+        logout()
