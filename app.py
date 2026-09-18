@@ -17,8 +17,7 @@ st.set_page_config(
 # DATABASE
 # -----------------------------
 
-DB = "store.db"
-
+DB = "store_new.db"
 
 def connect_db():
     return sqlite3.connect(DB)
