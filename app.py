@@ -1,14 +1,19 @@
 import streamlit as st
 import sqlite3
 import hashlib
+import os
 from datetime import datetime
 
-# =========================
+# Groq
+from groq import Groq
+
+
+# =========================================================
 # 基本設定
-# =========================
+# =========================================================
 
 st.set_page_config(
-    page_title="我的線上商店",
+    page_title="Yuumi AI Store",
     page_icon="🛍️",
     layout="wide"
 )
@@ -16,9 +21,9 @@ st.set_page_config(
 DB = "shop.db"
 
 
-# =========================
+# =========================================================
 # 資料庫
-# =========================
+# =========================================================
 
 def connect_db():
     return sqlite3.connect(DB)
@@ -74,7 +79,7 @@ def init_database():
         )
     """)
 
-    # 建立管理員帳號
+    # 管理員
     cur.execute("""
         INSERT OR IGNORE INTO users
         (username, password, role)
@@ -85,7 +90,7 @@ def init_database():
         "admin"
     ))
 
-    # 建立一般使用者
+    # 顧客
     cur.execute("""
         INSERT OR IGNORE INTO users
         (username, password, role)
@@ -119,9 +124,9 @@ def init_database():
     conn.close()
 
 
-# =========================
+# =========================================================
 # Session State
-# =========================
+# =========================================================
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
@@ -135,20 +140,216 @@ if "role" not in st.session_state:
 if "cart" not in st.session_state:
     st.session_state.cart = {}
 
+if "chat_messages" not in st.session_state:
+    st.session_state.chat_messages = []
 
-# =========================
+
+# =========================================================
+# Groq
+# =========================================================
+
+def get_groq_client():
+    """
+    API Key 優先從 Streamlit Secrets 讀取。
+    如果本機有環境變數，也可以使用 GROQ_API_KEY。
+    """
+
+    api_key = None
+
+    try:
+        api_key = st.secrets["GROQ_API_KEY"]
+    except Exception:
+        api_key = os.environ.get("GROQ_API_KEY")
+
+    if not api_key:
+        return None
+
+    return Groq(api_key=api_key)
+
+
+# =========================================================
+# 從資料庫取得全部商品
+# =========================================================
+
+def get_all_products():
+    conn = connect_db()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT id, name, price, stock
+        FROM products
+        ORDER BY id
+    """)
+
+    products = cur.fetchall()
+
+    conn.close()
+
+    return products
+
+
+# =========================================================
+# 搜尋商品
+# =========================================================
+
+def search_products(keyword):
+    conn = connect_db()
+    cur = conn.cursor()
+
+    keyword = keyword.strip()
+
+    cur.execute("""
+        SELECT id, name, price, stock
+        FROM products
+        WHERE name LIKE ?
+        ORDER BY id
+    """, (f"%{keyword}%",))
+
+    products = cur.fetchall()
+
+    conn.close()
+
+    return products
+
+
+# =========================================================
+# AI 商品客服
+# =========================================================
+
+def ai_store_chat(user_question):
+
+    client = get_groq_client()
+
+    if client is None:
+        return (
+            "⚠️ Groq API Key 還沒有設定。\n\n"
+            "請到 Streamlit Secrets 設定 GROQ_API_KEY。"
+        )
+
+    # -----------------------------------------------------
+    # 先從真正的資料庫取得商品
+    # -----------------------------------------------------
+
+    products = get_all_products()
+
+    if not products:
+        return "目前商店資料庫裡沒有商品。"
+
+    product_text = ""
+
+    for product_id, name, price, stock in products:
+
+        if stock > 0:
+            availability = "In stock"
+        else:
+            availability = "Out of stock"
+
+        product_text += (
+            f"ID: {product_id}\n"
+            f"Product: {name}\n"
+            f"Price: NT$ {price:.0f}\n"
+            f"Stock: {stock}\n"
+            f"Availability: {availability}\n"
+            f"---\n"
+        )
+
+    # -----------------------------------------------------
+    # System Prompt
+    # -----------------------------------------------------
+
+    system_prompt = f"""
+You are the AI customer assistant for Yuumi Online Store.
+
+IMPORTANT RULES:
+
+1. You MUST only use the store information provided below.
+2. NEVER invent a product.
+3. NEVER invent a price.
+4. NEVER invent inventory.
+5. If a product is not listed, say that the product is not currently in the store.
+6. If stock is 0, clearly say it is out of stock.
+7. When recommending products, only recommend products from the database.
+8. Prefer recommending products that are currently in stock.
+9. You can answer questions about:
+   - product availability
+   - price
+   - inventory
+   - simple product information
+   - similar or related products
+10. If the customer asks for something unrelated to the store, politely say that you mainly help with store products.
+11. Answer clearly and briefly.
+12. The store uses NT$ for prices.
+
+REAL STORE DATABASE:
+
+{product_text}
+"""
+
+    # -----------------------------------------------------
+    # AI conversation
+    # -----------------------------------------------------
+
+    messages = [
+        {
+            "role": "system",
+            "content": system_prompt
+        }
+    ]
+
+    # 加入最近幾次對話
+    for message in st.session_state.chat_messages[-6:]:
+        messages.append({
+            "role": message["role"],
+            "content": message["content"]
+        })
+
+    messages.append({
+        "role": "user",
+        "content": user_question
+    })
+
+    try:
+
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=messages,
+            temperature=0.2,
+            max_tokens=500
+        )
+
+        answer = response.choices[0].message.content
+
+        return answer
+
+    except Exception as e:
+
+        return (
+            "❌ AI 暫時無法回答。\n\n"
+            f"錯誤：{str(e)}"
+        )
+
+
+# =========================================================
 # 登入
-# =========================
+# =========================================================
 
 def login():
-    st.title("🛍️ 我的線上商店")
 
-    st.subheader("🔐 登入")
+    st.title("🛍️ Yuumi Online Store")
 
-    username = st.text_input("帳號")
-    password = st.text_input("密碼", type="password")
+    st.subheader("🔐 Login")
 
-    if st.button("登入", use_container_width=True):
+    username = st.text_input("Username")
+
+    password = st.text_input(
+        "Password",
+        type="password"
+    )
+
+    if st.button(
+        "Login",
+        use_container_width=True
+    ):
 
         conn = connect_db()
         cur = conn.cursor()
@@ -168,54 +369,46 @@ def login():
         conn.close()
 
         if user:
+
             st.session_state.logged_in = True
             st.session_state.username = user[0]
             st.session_state.role = user[1]
 
-            st.success("登入成功！")
+            st.success("Login successful!")
+
             st.rerun()
 
         else:
-            st.error("帳號或密碼錯誤")
+
+            st.error("Incorrect username or password.")
 
     st.divider()
 
     st.info("""
-    測試帳號：
+Test Accounts
 
-    管理員：
-    帳號：admin
-    密碼：admin123
+Admin:
+Username: admin
+Password: admin123
 
-    顧客：
-    帳號：customer
-    密碼：customer123
-    """)
+Customer:
+Username: customer
+Password: customer123
+""")
 
 
-# =========================
+# =========================================================
 # 商品列表
-# =========================
+# =========================================================
 
 def show_products():
 
-    st.title("🛍️ 商品商店")
+    st.title("🛍️ Products")
 
-    conn = connect_db()
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT id, name, price, stock
-        FROM products
-        ORDER BY id
-    """)
-
-    products = cur.fetchall()
-
-    conn.close()
+    products = get_all_products()
 
     if not products:
-        st.warning("目前沒有商品")
+        st.warning("No products available.")
         return
 
     cols = st.columns(3)
@@ -231,13 +424,18 @@ def show_products():
 
             st.subheader(name)
 
-            st.write(f"💰 價格：NT$ {price:.0f}")
+            st.write(
+                f"💰 Price: NT$ {price:.0f}"
+            )
 
             if stock > 0:
-                st.write(f"📦 庫存：{stock}")
+
+                st.write(
+                    f"📦 Stock: {stock}"
+                )
 
                 quantity = st.number_input(
-                    "數量",
+                    "Quantity",
                     min_value=1,
                     max_value=stock,
                     value=1,
@@ -245,34 +443,113 @@ def show_products():
                 )
 
                 if st.button(
-                    "🛒 加入購物車",
+                    "🛒 Add to Cart",
                     key=f"add_{product_id}",
                     use_container_width=True
                 ):
 
-                    if product_id in st.session_state.cart:
-                        st.session_state.cart[product_id] += quantity
-                    else:
-                        st.session_state.cart[product_id] = quantity
+                    current_quantity = (
+                        st.session_state.cart.get(
+                            product_id,
+                            0
+                        )
+                    )
 
-                    st.success(f"{name} 已加入購物車")
+                    new_quantity = (
+                        current_quantity + quantity
+                    )
+
+                    if new_quantity <= stock:
+
+                        st.session_state.cart[
+                            product_id
+                        ] = new_quantity
+
+                        st.success(
+                            f"{name} added to cart!"
+                        )
+
+                    else:
+
+                        st.error(
+                            "Not enough stock."
+                        )
 
             else:
-                st.error("售罄")
+
+                st.error("❌ Out of stock")
 
             st.divider()
 
 
-# =========================
+# =========================================================
+# AI Chatbot
+# =========================================================
+
+def chatbot_page():
+
+    st.title("🤖 AI Store Assistant")
+
+    st.write(
+        "Ask me about product prices, stock, availability, "
+        "or related products."
+    )
+
+    st.info(
+        "💡 Example: Do you have wireless headphones in stock?"
+    )
+
+    # 顯示舊訊息
+    for message in st.session_state.chat_messages:
+
+        with st.chat_message(message["role"]):
+
+            st.write(message["content"])
+
+    user_question = st.chat_input(
+        "Ask about our products..."
+    )
+
+    if user_question:
+
+        # 顯示使用者問題
+        st.session_state.chat_messages.append({
+            "role": "user",
+            "content": user_question
+        })
+
+        with st.chat_message("user"):
+            st.write(user_question)
+
+        # AI 回答
+        with st.chat_message("assistant"):
+
+            with st.spinner("Checking store database..."):
+
+                answer = ai_store_chat(
+                    user_question
+                )
+
+            st.write(answer)
+
+        st.session_state.chat_messages.append({
+            "role": "assistant",
+            "content": answer
+        })
+
+
+# =========================================================
 # 購物車
-# =========================
+# =========================================================
 
 def show_cart():
 
-    st.title("🛒 我的購物車")
+    st.title("🛒 My Cart")
 
     if not st.session_state.cart:
-        st.info("購物車目前是空的")
+
+        st.info("Your cart is empty.")
+
         return
 
     conn = connect_db()
@@ -297,7 +574,19 @@ def show_cart():
 
         name, price, stock = product
 
+        # 如果庫存變少，避免購物車數量超過庫存
+        if quantity > stock:
+            quantity = stock
+            st.session_state.cart[
+                product_id
+            ] = stock
+
+        if quantity <= 0:
+            del st.session_state.cart[product_id]
+            continue
+
         subtotal = price * quantity
+
         total += subtotal
 
         col1, col2, col3, col4 = st.columns(
@@ -311,16 +600,19 @@ def show_cart():
             st.write(f"NT$ {price:.0f}")
 
         with col3:
-            st.write(f"數量：{quantity}")
+            st.write(f"Quantity: {quantity}")
 
         with col4:
 
             if st.button(
-                "🗑️ 移除",
+                "🗑️ Remove",
                 key=f"remove_{product_id}"
             ):
 
-                del st.session_state.cart[product_id]
+                del st.session_state.cart[
+                    product_id
+                ]
+
                 st.rerun()
 
     conn.close()
@@ -328,36 +620,43 @@ def show_cart():
     st.divider()
 
     st.subheader(
-        f"總金額：NT$ {total:.0f}"
+        f"Total: NT$ {total:.0f}"
     )
 
     if st.button(
-        "💳 前往結帳",
+        "💳 Checkout",
         use_container_width=True
     ):
+
         st.session_state.page = "checkout"
+
         st.rerun()
 
 
-# =========================
+# =========================================================
 # 結帳
-# =========================
+# =========================================================
 
 def checkout():
 
-    st.title("💳 結帳")
+    st.title("💳 Checkout")
 
     if not st.session_state.cart:
-        st.info("購物車是空的")
+
+        st.info("Your cart is empty.")
+
         return
 
     conn = connect_db()
     cur = conn.cursor()
 
     total = 0
+
     order_products = []
 
-    for product_id, quantity in st.session_state.cart.items():
+    for product_id, quantity in (
+        st.session_state.cart.items()
+    ):
 
         cur.execute("""
             SELECT name, price, stock
@@ -373,47 +672,58 @@ def checkout():
         name, price, stock = product
 
         if quantity > stock:
+
             st.error(
-                f"{name} 庫存不足，目前只剩 {stock} 件"
+                f"{name} only has {stock} left."
             )
+
             conn.close()
+
             return
 
         subtotal = price * quantity
+
         total += subtotal
 
         order_products.append(
-            (product_id, name, price, quantity)
+            (
+                product_id,
+                name,
+                price,
+                quantity
+            )
         )
 
-    st.subheader("訂單內容")
+    st.subheader("Order")
 
     for product_id, name, price, quantity in order_products:
+
         st.write(
-            f"{name} × {quantity} = NT$ {price * quantity:.0f}"
+            f"{name} × {quantity} = "
+            f"NT$ {price * quantity:.0f}"
         )
 
     st.divider()
 
     st.subheader(
-        f"應付金額：NT$ {total:.0f}"
+        f"Total: NT$ {total:.0f}"
     )
 
     payment = st.selectbox(
-        "付款方式",
+        "Payment Method",
         [
-            "信用卡（示範）",
-            "ATM（示範）",
-            "超商付款（示範）"
+            "Credit Card (Demo)",
+            "ATM (Demo)",
+            "Convenience Store (Demo)"
         ]
     )
 
     st.info(
-        f"目前選擇：{payment}"
+        f"Selected payment: {payment}"
     )
 
     if st.button(
-        "✅ 確認付款並完成訂單",
+        "✅ Complete Order",
         use_container_width=True
     ):
 
@@ -433,11 +743,17 @@ def checkout():
         order_id = cur.lastrowid
 
         # 建立訂單商品
-        for product_id, name, price, quantity in order_products:
+        for (
+            product_id,
+            name,
+            price,
+            quantity
+        ) in order_products:
 
             cur.execute("""
                 INSERT INTO order_items
-                (order_id, product_id, product_name, quantity, price)
+                (order_id, product_id,
+                 product_name, quantity, price)
                 VALUES (?, ?, ?, ?, ?)
             """, (
                 order_id,
@@ -447,7 +763,7 @@ def checkout():
                 price
             ))
 
-            # 扣除庫存
+            # 扣庫存
             cur.execute("""
                 UPDATE products
                 SET stock = stock - ?
@@ -460,23 +776,23 @@ def checkout():
         conn.commit()
         conn.close()
 
-        # 清空購物車
         st.session_state.cart = {}
 
         st.success(
-            f"🎉 訂單完成！訂單編號：#{order_id}"
+            f"🎉 Order completed! "
+            f"Order #{order_id}"
         )
 
         st.balloons()
 
 
-# =========================
+# =========================================================
 # 訂單紀錄
-# =========================
+# =========================================================
 
 def order_history():
 
-    st.title("📦 我的訂單")
+    st.title("📦 My Orders")
 
     conn = connect_db()
     cur = conn.cursor()
@@ -493,8 +809,11 @@ def order_history():
     orders = cur.fetchall()
 
     if not orders:
-        st.info("目前沒有訂單")
+
+        st.info("No orders yet.")
+
         conn.close()
+
         return
 
     for order in orders:
@@ -504,11 +823,15 @@ def order_history():
         created_at = order[2]
 
         with st.expander(
-            f"訂單 #{order_id}｜NT$ {total:.0f}｜{created_at}"
+            f"Order #{order_id} | "
+            f"NT$ {total:.0f} | "
+            f"{created_at}"
         ):
 
             cur.execute("""
-                SELECT product_name, quantity, price
+                SELECT product_name,
+                       quantity,
+                       price
                 FROM order_items
                 WHERE order_id = ?
             """, (order_id,))
@@ -527,62 +850,53 @@ def order_history():
     conn.close()
 
 
-# =========================
+# =========================================================
 # 管理員後台
-# =========================
+# =========================================================
 
 def admin_dashboard():
 
-    st.title("🔧 管理員後台")
+    st.title("🔧 Admin Dashboard")
 
     tab1, tab2, tab3 = st.tabs([
-        "📦 商品管理",
-        "➕ 新增商品",
-        "📊 訂單管理"
+        "📦 Product Management",
+        "➕ Add Product",
+        "📊 Orders"
     ])
 
-    # ---------------------
+    # -----------------------------------------------------
     # 商品管理
-    # ---------------------
+    # -----------------------------------------------------
 
     with tab1:
 
-        conn = connect_db()
-        cur = conn.cursor()
-
-        cur.execute("""
-            SELECT id, name, price, stock
-            FROM products
-            ORDER BY id
-        """)
-
-        products = cur.fetchall()
-
-        conn.close()
+        products = get_all_products()
 
         for product in products:
 
             product_id, name, price, stock = product
 
             with st.expander(
-                f"{name}｜NT$ {price:.0f}｜庫存 {stock}"
+                f"{name} | "
+                f"NT$ {price:.0f} | "
+                f"Stock {stock}"
             ):
 
                 new_name = st.text_input(
-                    "商品名稱",
+                    "Product Name",
                     value=name,
                     key=f"name_{product_id}"
                 )
 
                 new_price = st.number_input(
-                    "價格",
+                    "Price",
                     min_value=0.0,
                     value=float(price),
                     key=f"price_{product_id}"
                 )
 
                 new_stock = st.number_input(
-                    "庫存",
+                    "Stock",
                     min_value=0,
                     value=int(stock),
                     key=f"stock_{product_id}"
@@ -593,7 +907,7 @@ def admin_dashboard():
                 with col1:
 
                     if st.button(
-                        "💾 儲存修改",
+                        "💾 Save",
                         key=f"save_{product_id}",
                         use_container_width=True
                     ):
@@ -603,7 +917,9 @@ def admin_dashboard():
 
                         cur.execute("""
                             UPDATE products
-                            SET name = ?, price = ?, stock = ?
+                            SET name = ?,
+                                price = ?,
+                                stock = ?
                             WHERE id = ?
                         """, (
                             new_name,
@@ -615,13 +931,14 @@ def admin_dashboard():
                         conn.commit()
                         conn.close()
 
-                        st.success("修改成功")
+                        st.success("Product updated!")
+
                         st.rerun()
 
                 with col2:
 
                     if st.button(
-                        "🗑️ 刪除商品",
+                        "🗑️ Delete",
                         key=f"delete_{product_id}",
                         use_container_width=True
                     ):
@@ -637,38 +954,49 @@ def admin_dashboard():
                         conn.commit()
                         conn.close()
 
-                        st.success("商品已刪除")
+                        st.success(
+                            "Product deleted!"
+                        )
+
                         st.rerun()
 
-    # ---------------------
+    # -----------------------------------------------------
     # 新增商品
-    # ---------------------
+    # -----------------------------------------------------
 
     with tab2:
 
-        st.subheader("➕ 新增商品")
+        st.subheader("➕ Add Product")
 
-        name = st.text_input("商品名稱")
+        name = st.text_input(
+            "Product Name",
+            key="new_product_name"
+        )
 
         price = st.number_input(
-            "商品價格",
+            "Price",
             min_value=0.0,
-            value=100.0
+            value=100.0,
+            key="new_product_price"
         )
 
         stock = st.number_input(
-            "商品庫存",
+            "Stock",
             min_value=0,
-            value=10
+            value=10,
+            key="new_product_stock"
         )
 
         if st.button(
-            "新增商品",
+            "Add Product",
             use_container_width=True
         ):
 
             if not name:
-                st.error("請輸入商品名稱")
+
+                st.error(
+                    "Please enter a product name."
+                )
 
             else:
 
@@ -688,12 +1016,15 @@ def admin_dashboard():
                 conn.commit()
                 conn.close()
 
-                st.success("商品新增成功！")
+                st.success(
+                    "Product added!"
+                )
+
                 st.rerun()
 
-    # ---------------------
+    # -----------------------------------------------------
     # 訂單管理
-    # ---------------------
+    # -----------------------------------------------------
 
     with tab3:
 
@@ -701,7 +1032,10 @@ def admin_dashboard():
         cur = conn.cursor()
 
         cur.execute("""
-            SELECT id, username, total, created_at
+            SELECT id,
+                   username,
+                   total,
+                   created_at
             FROM orders
             ORDER BY id DESC
         """)
@@ -711,7 +1045,8 @@ def admin_dashboard():
         conn.close()
 
         if not orders:
-            st.info("目前沒有訂單")
+
+            st.info("No orders yet.")
 
         else:
 
@@ -720,18 +1055,18 @@ def admin_dashboard():
                 order_id, username, total, created_at = order
 
                 st.write(
-                    f"📦 訂單 #{order_id}｜"
-                    f"顧客：{username}｜"
-                    f"金額：NT$ {total:.0f}｜"
+                    f"📦 Order #{order_id} | "
+                    f"Customer: {username} | "
+                    f"NT$ {total:.0f} | "
                     f"{created_at}"
                 )
 
                 st.divider()
 
 
-# =========================
+# =========================================================
 # 登出
-# =========================
+# =========================================================
 
 def logout():
 
@@ -739,20 +1074,21 @@ def logout():
     st.session_state.username = ""
     st.session_state.role = ""
     st.session_state.cart = {}
+    st.session_state.chat_messages = []
 
     st.rerun()
 
 
-# =========================
+# =========================================================
 # 啟動資料庫
-# =========================
+# =========================================================
 
 init_database()
 
 
-# =========================
+# =========================================================
 # 主程式
-# =========================
+# =========================================================
 
 if not st.session_state.logged_in:
 
@@ -760,55 +1096,81 @@ if not st.session_state.logged_in:
 
 else:
 
-    st.sidebar.title("🛍️ 我的商店")
+    st.sidebar.title("🛍️ Yuumi Store")
 
     st.sidebar.write(
-        f"👤 使用者：{st.session_state.username}"
+        f"👤 User: "
+        f"{st.session_state.username}"
     )
 
     st.sidebar.write(
-        f"身份：{st.session_state.role}"
+        f"Role: "
+        f"{st.session_state.role}"
     )
 
     st.sidebar.divider()
+
+    # -----------------------------------------------------
+    # 管理員
+    # -----------------------------------------------------
 
     if st.session_state.role == "admin":
 
         page = st.sidebar.radio(
-            "功能",
+            "Menu",
             [
-                "🔧 管理員後台",
-                "🛍️ 商品商店"
+                "🔧 Admin Dashboard",
+                "🛍️ Store",
+                "🤖 AI Assistant"
             ]
         )
 
-        if page == "🔧 管理員後台":
+        if page == "🔧 Admin Dashboard":
+
             admin_dashboard()
 
-        elif page == "🛍️ 商品商店":
+        elif page == "🛍️ Store":
+
             show_products()
+
+        elif page == "🤖 AI Assistant":
+
+            chatbot_page()
+
+    # -----------------------------------------------------
+    # 顧客
+    # -----------------------------------------------------
 
     else:
 
         page = st.sidebar.radio(
-            "功能",
+            "Menu",
             [
-                "🛍️ 商品商店",
-                "🛒 購物車",
-                "📦 我的訂單"
+                "🛍️ Store",
+                "🛒 Cart",
+                "📦 My Orders",
+                "🤖 AI Assistant"
             ]
         )
 
-        if page == "🛍️ 商品商店":
+        if page == "🛍️ Store":
+
             show_products()
 
-        elif page == "🛒 購物車":
+        elif page == "🛒 Cart":
+
             show_cart()
 
-        elif page == "📦 我的訂單":
+        elif page == "📦 My Orders":
+
             order_history()
+
+        elif page == "🤖 AI Assistant":
+
+            chatbot_page()
 
     st.sidebar.divider()
 
-    if st.button("🚪 登出"):
+    if st.sidebar.button("🚪 Logout"):
+
         logout()
