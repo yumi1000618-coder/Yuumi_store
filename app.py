@@ -2,6 +2,7 @@ import streamlit as st
 import sqlite3
 import hashlib
 from datetime import datetime
+from openai import OpenAI
 
 # =========================
 # 基本設定
@@ -22,8 +23,72 @@ DB = "shop.db"
 
 def connect_db():
     return sqlite3.connect(DB)
+# =========================
+# Grok AI
+# =========================
+
+def get_store_data():
+    conn = connect_db()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT id, name, price, stock
+        FROM products
+        ORDER BY id
+    """)
+
+    products = cur.fetchall()
+    conn.close()
+
+    return products
 
 
+def ask_grok(question):
+    products = get_store_data()
+
+    store_info = "\n".join(
+        [
+            f"商品：{name}｜價格：NT$ {price:.0f}｜庫存：{stock}"
+            for product_id, name, price, stock in products
+        ]
+    )
+
+    client = OpenAI(
+        api_key=st.secrets["XAI_API_KEY"],
+        base_url="https://api.x.ai/v1"
+    )
+
+    response = client.chat.completions.create(
+        model="grok-4.7",
+        messages=[
+            {
+                "role": "system",
+                "content": f"""
+你是這個線上商店的 AI 購物助手。
+
+你只能使用下面的真實商店資料回答問題：
+
+{store_info}
+
+規則：
+1. 價格一定要使用商店資料。
+2. 庫存一定要使用商店資料。
+3. 如果庫存是 0，要告訴顧客售罄。
+4. 不可以自己創造不存在的商品。
+5. 顧客詢問推薦商品時，只推薦商店資料中的商品。
+6. 推薦商品時優先推薦有庫存的商品。
+7. 如果找不到顧客詢問的商品，要誠實說目前沒有這項商品。
+8. 用繁體中文回答，簡單、自然。
+"""
+            },
+            {
+                "role": "user",
+                "content": question
+            }
+        ]
+    )
+
+    return response.choices[0].message.content
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
@@ -466,8 +531,51 @@ def checkout():
         st.success(
             f"🎉 訂單完成！訂單編號：#{order_id}"
         )
+# =========================
+# AI 購物助手
+# =========================
 
-        st.balloons()
+def ai_chatbot():
+
+    st.title("🤖 AI 購物助手")
+    st.write("可以詢問商品價格、庫存、是否有貨，以及商品推薦。")
+
+    if "chat_messages" not in st.session_state:
+        st.session_state.chat_messages = []
+
+    for message in st.session_state.chat_messages:
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
+
+    question = st.chat_input(
+        "例如：無線耳機現在有貨嗎？"
+    )
+
+    if question:
+
+        st.session_state.chat_messages.append({
+            "role": "user",
+            "content": question
+        })
+
+        with st.chat_message("user"):
+            st.write(question)
+
+        with st.chat_message("assistant"):
+
+            with st.spinner("AI 正在查詢商店資料..."):
+
+                try:
+                    answer = ask_grok(question)
+                    st.write(answer)
+
+                    st.session_state.chat_messages.append({
+                        "role": "assistant",
+                        "content": answer
+                    })
+
+                except Exception as e:
+                    st.error("AI 暫時無法使用，請確認 API Key 和設定。")        st.balloons()
 
 
 # =========================
@@ -796,7 +904,7 @@ else:
                 "🛍️ 商品商店",
                 "🛒 購物車",
                 "📦 我的訂單"
-            ]
+                "🤖 AI 購物助手"            ]
         )
 
         if page == "🛍️ 商品商店":
@@ -807,8 +915,8 @@ else:
 
         elif page == "📦 我的訂單":
             order_history()
-
-    st.sidebar.divider()
+elif page == "🤖 AI 購物助手":
+    ai_chatbot()    st.sidebar.divider()
 
     if st.button("🚪 登出"):
         logout()
